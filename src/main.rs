@@ -1,5 +1,7 @@
 // https://www.json.org/json-en.html
 
+use std::char;
+
 fn is_json_whitespace(c: char) -> bool {
     [' ', '\n', '\r', '\t'].contains(&c)
 }
@@ -274,7 +276,39 @@ impl<CI: CharIterator> JsonType<CI> for JsonString {
     }
 }
 
-fn main() {}
+fn hex_to_char(chars: [char; 4]) -> char {
+    let bytes = chars.map(|c| match c {
+        '0' => 0u8,
+        '1' => 1,
+        '2' => 2,
+        '3' => 3,
+        '4' => 4,
+        '5' => 5,
+        '6' => 6,
+        '7' => 7,
+        '8' => 8,
+        '9' => 9,
+        'a' | 'A' => 0xA,
+        'b' | 'B' => 0xB,
+        'c' | 'C' => 0xC,
+        'd' | 'D' => 0xD,
+        'e' | 'E' => 0xE,
+        'f' | 'F' => 0xF,
+        _ => panic!()
+    });
+    let b00 = bytes[0] << 4;
+    let b01 = bytes[1];
+    let b0 = b00 | b01;
+    let b10 = bytes[2] << 4;
+    let b11 = bytes[3];
+    let b1 = b10 | b11;
+    let bytes = [0, 0, b0, b1];
+    char::from_u32(u32::from_be_bytes(bytes)).unwrap()
+}
+
+fn main() {
+    println!("{}", hex_to_char(['0', '1', '9', 'B']));
+}
 
 #[cfg(test)]
 mod tests {}
