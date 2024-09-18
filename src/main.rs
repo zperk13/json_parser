@@ -1,6 +1,6 @@
 // https://www.json.org/json-en.html
-
-use std::char;
+#![allow(dead_code)]
+#![allow(unused_variables)]
 
 fn is_json_whitespace(c: char) -> bool {
     [' ', '\n', '\r', '\t'].contains(&c)
@@ -72,11 +72,40 @@ impl<CI: CharIterator> WhitespaceSkippingIndexTrackingIter<CI> {
     /// whitespace will still be consumed
     fn next_non_whitespace_if_eq(&mut self, expected: char) -> Option<char> {
         loop {
-            let next = self.inner.next_if(|c| is_json_whitespace(*c) || *c == expected)?;
+            let next = self
+                .inner
+                .next_if(|c| is_json_whitespace(*c) || *c == expected)?;
             if is_json_whitespace(next) {
                 continue;
             }
             return Some(next);
+        }
+    }
+
+    fn expect_specific_char(&mut self, expected: char) -> Result<(), ParseError> {
+        let c = self.next_any().ok_or(ParseError::UnexpectedEndOfString)?;
+        if c == expected {
+            Ok(())
+        } else {
+            Err(ParseError::UnexpectedCharacter {
+                character: c,
+                index: self.previously_outputted_index.unwrap(),
+                expected_characters: vec![expected],
+            })
+        }
+    }
+    fn expect_specific_char_ignore_whitespace(&mut self, expected: char) -> Result<(), ParseError> {
+        let c = self
+            .next_non_whitespace()
+            .ok_or(ParseError::UnexpectedEndOfString)?;
+        if c == expected {
+            Ok(())
+        } else {
+            Err(ParseError::UnexpectedCharacter {
+                character: c,
+                index: self.previously_outputted_index.unwrap(),
+                expected_characters: vec![expected],
+            })
         }
     }
 }
@@ -90,6 +119,10 @@ enum ParseError {
     UnexpectedEndOfString,
     ControlCharacter {
         control_character: char,
+        index: usize,
+    },
+    UnexpectedNonHexCharacter {
+        character: char,
         index: usize,
     },
 }
@@ -116,16 +149,7 @@ impl<CI: CharIterator> JsonType<CI> for JsonValue {
 struct JsonArray(Vec<JsonValue>);
 impl<CI: CharIterator> JsonType<CI> for JsonArray {
     fn parse(i: &mut WhitespaceSkippingIndexTrackingIter<CI>) -> Result<Self, ParseError> {
-        {
-            let first_char = i.next_any().ok_or(ParseError::UnexpectedEndOfString)?;
-            if first_char != '[' {
-                return Err(ParseError::UnexpectedCharacter {
-                    character: first_char,
-                    index: i.previously_outputted_index.unwrap(),
-                    expected_characters: vec!['['],
-                });
-            }
-        }
+        i.expect_specific_char('[')?;
         let mut v = Vec::new();
         let is_empty = i.next_non_whitespace_if_eq(']').is_some();
         if is_empty {
@@ -176,16 +200,7 @@ impl<CI: CharIterator> JsonType<CI> for JsonNumber {
 struct JsonObject(std::collections::HashMap<JsonString, JsonValue>);
 impl<CI: CharIterator> JsonType<CI> for JsonObject {
     fn parse(i: &mut WhitespaceSkippingIndexTrackingIter<CI>) -> Result<Self, ParseError> {
-        {
-            let first_char = i.next_any().ok_or(ParseError::UnexpectedEndOfString)?;
-            if first_char != '{' {
-                return Err(ParseError::UnexpectedCharacter {
-                    character: first_char,
-                    index: i.previously_outputted_index.unwrap(),
-                    expected_characters: vec!['{'],
-                });
-            }
-        }
+        i.expect_specific_char('{')?;
         let mut hashmap = std::collections::HashMap::new();
         let mut is_first = true;
         loop {
@@ -203,16 +218,7 @@ impl<CI: CharIterator> JsonType<CI> for JsonObject {
                 });
             }
             let key = JsonString::parse(i)?;
-            let next_char = i
-                .next_non_whitespace()
-                .ok_or(ParseError::UnexpectedEndOfString)?;
-            if next_char != ':' {
-                return Err(ParseError::UnexpectedCharacter {
-                    character: next_char,
-                    index: i.previously_outputted_index.unwrap(),
-                    expected_characters: vec![':'],
-                });
-            }
+            i.expect_specific_char_ignore_whitespace(':')?;
             let value = JsonValue::parse(i)?;
             hashmap.insert(key, value);
             is_first = false;
@@ -224,16 +230,7 @@ impl<CI: CharIterator> JsonType<CI> for JsonObject {
 struct JsonString(String);
 impl<CI: CharIterator> JsonType<CI> for JsonString {
     fn parse(i: &mut WhitespaceSkippingIndexTrackingIter<CI>) -> Result<Self, ParseError> {
-        {
-            let first_char = i.next_any().ok_or(ParseError::UnexpectedEndOfString)?;
-            if first_char != '"' {
-                return Err(ParseError::UnexpectedCharacter {
-                    character: first_char,
-                    index: i.previously_outputted_index.unwrap(),
-                    expected_characters: vec!['"'],
-                });
-            }
-        }
+        i.expect_specific_char('"')?;
         let mut string = String::new();
         loop {
             let next_char = i.next_any().ok_or(ParseError::UnexpectedEndOfString)?;
@@ -256,7 +253,55 @@ impl<CI: CharIterator> JsonType<CI> for JsonString {
                 } else if escaped_character == 't' {
                     string.push('\t');
                 } else if escaped_character == 'u' {
-                    todo!("Figure out the best way to implement parsing 4 hex digits")
+                    fn parse4hex<CI: CharIterator>(
+                        i: &mut WhitespaceSkippingIndexTrackingIter<CI>,
+                    ) -> Result<u16, ParseError> {
+                        let mut next_char =
+                            i.next_any().ok_or(ParseError::UnexpectedEndOfString)?;
+                        let b00 = hex_digit_to_byte(next_char);
+                        let b00 = b00.ok_or(ParseError::UnexpectedNonHexCharacter {
+                            character: next_char,
+                            index: i.previously_outputted_index.unwrap(),
+                        })?;
+                        next_char = i.next_any().ok_or(ParseError::UnexpectedEndOfString)?;
+                        let b01 = hex_digit_to_byte(next_char);
+                        let b01 = b01.ok_or(ParseError::UnexpectedNonHexCharacter {
+                            character: next_char,
+                            index: i.previously_outputted_index.unwrap(),
+                        })?;
+
+                        next_char = i.next_any().ok_or(ParseError::UnexpectedEndOfString)?;
+                        let b10 = hex_digit_to_byte(next_char);
+                        let b10 = b10.ok_or(ParseError::UnexpectedNonHexCharacter {
+                            character: next_char,
+                            index: i.previously_outputted_index.unwrap(),
+                        })?;
+                        next_char = i.next_any().ok_or(ParseError::UnexpectedEndOfString)?;
+                        let b11 = hex_digit_to_byte(next_char);
+                        let b11 = b11.ok_or(ParseError::UnexpectedNonHexCharacter {
+                            character: next_char,
+                            index: i.previously_outputted_index.unwrap(),
+                        })?;
+
+                        let b0 = (b00 << 4) | b01;
+                        let b1 = (b10 << 4) | b11;
+
+                        Ok(((b0 as u16) << 8) | (b1 as u16))
+                    }
+                    let w0 = parse4hex(i)?;
+                    if (0xD800..=0xDFFF).contains(&w0) {
+                        i.expect_specific_char('\\')?;
+                        i.expect_specific_char('u')?;
+                        let w1 = parse4hex(i)?;
+                        string.push(char::decode_utf16([w0, w1]).next().unwrap().unwrap());
+                    } else {
+                        string.push(
+                            char::decode_utf16(std::iter::once(w0))
+                                .next()
+                                .unwrap()
+                                .unwrap(),
+                        );
+                    }
                 } else {
                     return Err(ParseError::UnexpectedCharacter {
                         character: escaped_character,
@@ -276,39 +321,45 @@ impl<CI: CharIterator> JsonType<CI> for JsonString {
     }
 }
 
-fn hex_to_char(chars: [char; 4]) -> char {
-    let bytes = chars.map(|c| match c {
-        '0' => 0u8,
-        '1' => 1,
-        '2' => 2,
-        '3' => 3,
-        '4' => 4,
-        '5' => 5,
-        '6' => 6,
-        '7' => 7,
-        '8' => 8,
-        '9' => 9,
-        'a' | 'A' => 0xA,
-        'b' | 'B' => 0xB,
-        'c' | 'C' => 0xC,
-        'd' | 'D' => 0xD,
-        'e' | 'E' => 0xE,
-        'f' | 'F' => 0xF,
-        _ => panic!()
-    });
-    let b00 = bytes[0] << 4;
-    let b01 = bytes[1];
-    let b0 = b00 | b01;
-    let b10 = bytes[2] << 4;
-    let b11 = bytes[3];
-    let b1 = b10 | b11;
-    let bytes = [0, 0, b0, b1];
-    char::from_u32(u32::from_be_bytes(bytes)).unwrap()
+fn hex_digit_to_byte(hex_digit: char) -> Option<u8> {
+    match hex_digit {
+        '0' => Some(0),
+        '1' => Some(1),
+        '2' => Some(2),
+        '3' => Some(3),
+        '4' => Some(4),
+        '5' => Some(5),
+        '6' => Some(6),
+        '7' => Some(7),
+        '8' => Some(8),
+        '9' => Some(9),
+        'a' | 'A' => Some(0xA),
+        'b' | 'B' => Some(0xB),
+        'c' | 'C' => Some(0xC),
+        'd' | 'D' => Some(0xD),
+        'e' | 'E' => Some(0xE),
+        'f' | 'F' => Some(0xF),
+        _ => None,
+    }
 }
 
-fn main() {
-    println!("{}", hex_to_char(['0', '1', '9', 'B']));
-}
+fn main() {}
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    #[test]
+    fn all_non_surrogates_are_valid() {
+        fn test(x: u16) {
+            let mut iter = char::decode_utf16(std::iter::once(x));
+            assert!(iter.next().unwrap().is_ok());
+            let second_next = iter.next();
+            assert!(second_next.is_none());
+        }
+        for x in 0x0000..=0xD7FF {
+            test(x)
+        }
+        for x in 0xE000..=0xFFFF {
+            test(x)
+        }
+    }
+}
